@@ -1,0 +1,118 @@
+#!/usr/bin/env python
+
+import sys
+import subprocess
+import re
+from pyral import Rally
+import requests
+
+
+# GLOBAL VARIABLES
+ERROR_MESSAGE = (' \n'
+                 '\n'
+                 'The Following Commit Patterns are accepted \n'
+                 '\n'
+                 'For Prepaid Project:\n'
+                 'PRE[TA1234,TA5678] Commit Description\n'
+                 '\n'
+                 'For Postpaid Project:\n'
+                 'POST[TA1122] Commit Description \n'
+                 '\n'
+                 'For TPE Project:\n'
+                 'TPE[TA1122] Commit Description \n')
+
+key = "FILL THIS ONE"
+server = "FILL THIS ONE"
+workspace = "FILL THIS ONE"
+fields = "State"
+project = ""
+release_branch_url = 'http://devops.tmobile.internal:8081/api/v3/projects/111/repository/' \
+                        + 'files/release_branches/raw?ref=master'
+
+branch = sys.argv[1]
+if "tags" in branch:
+    sys.exit(0)
+branch = branch.replace("refs/heads/", "")
+old = sys.argv[2]
+new = sys.argv[3]
+
+
+release_branch_list = requests.get(release_branch_url)
+
+if release_branch_list.status_code != 200:
+    print ("Unable to get the release branch details ")
+    sys.exit(1)
+release_branch = release_branch_list.text
+if branch in release_branch:
+    sys.exit(0)
+#if branch in locked_branch:
+   # sys.exit(1)
+
+
+# If branch deletion
+if new == "0000000000000000000000000000000000000000":
+    sys.exit(0)
+# If it is a new branch
+if old == "0000000000000000000000000000000000000000":
+    commit_list = new.splitlines()
+else:
+    commit_list = subprocess.check_output(["/usr/bin/git", "rev-list", old + ".." + new]).splitlines()
+
+
+
+def project_check(commit_message):
+    """Project Check
+    Find which rally project the commit belongs to
+    """
+    global project
+    if re.search("PRE", commit_message):
+        project = "FILL THIS ONE"
+    elif re.search("POST", commit_message):
+        project = "FILL THIS ONE"
+    elif re.search("TPE", commit_message):
+        project = "FILL THIS ONE"
+    else:
+        project = ""
+    if re.search("[M|m]erge", commit_message):
+        project = "Merge"
+
+
+for commit in commit_list:
+    commit_message_list = subprocess.check_output(["/usr/bin/git", "show", "--quiet", '--pretty="%B"', commit]).splitlines()
+    for commit_message in commit_message_list:
+        if project == "Merge":
+            print ("Merge Commit")
+            sys.exit(0)
+        elif project == "":
+            project_check(commit_message)
+    if project == "":
+        print("commit message doesn't have Project ID")
+        sys.exit(1)
+
+    for commit_message in commit_message_list:
+        print (project)
+        rally = Rally(server, apikey=key, workspace=workspace, project=project)
+        rally.enableLogging('csi-devops_rally.log')
+        task_regex = r"\[(.+?)\]"
+        tasks = re.findall(task_regex,commit_message)
+        for task in tasks:
+            print (task)
+            task_ids = task.split(",")
+        for task_id in task_ids:
+            query = 'FormattedID = \"' + task_id + '\" '
+            resp = rally.get("Task", fetch=True, Fields=fields, query=query)
+            if resp.resultCount >= 1:
+                for task in resp:
+                    status = task.State
+                    print("Task Status" + status)
+                    if status != "In-Progress":
+                        print("Not a valid status on the task to commit this task")
+                        print (ERROR_MESSAGE)
+                        sys.exit(1)
+            else:
+                print ("Not a Valid Task")
+                print (ERROR_MESSAGE)
+                sys.exit(1)
+
+
+
